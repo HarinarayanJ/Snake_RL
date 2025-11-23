@@ -1,4 +1,4 @@
-from dqn_agent import SnakeEnv, DQNAgent
+from dqn_agent import DQNAgent, SnakeEnv
 from replay_buffer import ReplayBuffer
 import numpy as np
 import torch
@@ -6,10 +6,11 @@ import pickle
 import matplotlib.pyplot as plt
 import os
 
-EPISODES = 10000
+EPISODES = 10000        
 BATCH_SIZE = 64
 UPDATE_TARGET_EVERY = 50
-PLOT_EVERY = 1  # update plot every episode
+PLOT_EVERY = 1
+MAX_STEPS = 5000        # maximum steps per episode
 
 def train_dqn():
     env = SnakeEnv()
@@ -21,7 +22,7 @@ def train_dqn():
 
     rewards = []
     avg_rewards = []
-    lengths = []
+    snake_lengths = []
     avg_lengths = []
 
     # Setup live plot
@@ -31,37 +32,37 @@ def train_dqn():
     for ep in range(1, EPISODES + 1):
         state = env.reset()
         total_reward = 0
-        snake_length = 1  # initial snake length
+        steps = 0
+        max_snake_length = len(env.snake)  # track snake growth
 
         while True:
+            steps += 1
             action = agent.choose_action(state)
             next_state, reward, done, _ = env.step(action)
-
-            buffer.push((state, action, reward, next_state, done))
             state = next_state
             total_reward += reward
+            max_snake_length = max(max_snake_length, len(env.snake))
 
-            # Update snake length
-            snake_length = max(snake_length, len(env.snake))
+            buffer.push((state, action, reward, next_state, done))
 
             if len(buffer) > BATCH_SIZE:
                 batch = buffer.sample(BATCH_SIZE)
                 agent.train_step(batch)
 
-            if done:
+            if done or steps >= MAX_STEPS:
                 break
 
         rewards.append(total_reward)
-        lengths.append(snake_length)  # store snake length instead of steps
-
+        snake_lengths.append(max_snake_length)
         avg_rewards.append(np.mean(rewards[-50:]))
-        avg_lengths.append(np.mean(lengths[-50:]))
+        avg_lengths.append(np.mean(snake_lengths[-50:]))
 
-        # Sync target network periodically
+        # Update target network periodically
         if ep % UPDATE_TARGET_EVERY == 0:
             agent.update_target()
 
-        print(f"Episode {ep} | Reward: {total_reward} | Avg Reward: {avg_rewards[-1]:.2f} | Snake Length: {snake_length} | Avg Length: {avg_lengths[-1]:.2f}")
+        print(f"Episode {ep} | Reward: {total_reward} | Avg Reward: {avg_rewards[-1]:.2f} | "
+              f"Max Snake Length: {max_snake_length} | Avg Snake Length: {avg_lengths[-1]:.2f}")
 
         # Live plot
         if ep % PLOT_EVERY == 0:
@@ -74,7 +75,7 @@ def train_dqn():
             ax1.set_title("Episode vs Reward")
             ax1.legend()
 
-            ax2.plot(lengths, label='Snake Length')
+            ax2.plot(snake_lengths, label='Max Snake Length')
             ax2.plot(avg_lengths, label='Average Length (50 ep)')
             ax2.set_xlabel("Episode")
             ax2.set_ylabel("Snake Length")
@@ -83,15 +84,13 @@ def train_dqn():
 
             plt.pause(0.01)
 
-
     plt.ioff()
     plt.show()
+    plt.close('all')
 
-    plt.close('all') 
-
-    # Save trained model
-    
-    torch.save(agent.model.state_dict(), "dqn_snake.pth")
+    # Save model
+    torch.save(agent.model.state_dict(), os.path.join(os.getcwd(), "dqn_snake.pth"))
+    pickle.dump(rewards, open("dqn_rewards.pkl", "wb"))
     print("Training done! Model saved as 'dqn_snake.pth'")
 
 if __name__ == "__main__":
