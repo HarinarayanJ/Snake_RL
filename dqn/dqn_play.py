@@ -1,0 +1,213 @@
+import pygame
+import random
+import os
+import sys
+import pickle
+import torch
+import numpy as np
+from dqn_agent import DQNAgent, SnakeEnv  
+
+pygame.init()
+
+# --- Settings ---
+WIDTH, HEIGHT = 600, 400
+CELL_SIZE = 20
+
+WHITE = (255, 255, 255)
+GREEN = (0, 255, 0)
+DARK_GREEN = (0, 200, 0)
+RED = (255, 0, 0)
+BLACK = (0, 0, 0)
+GRAY = (40, 40, 40)
+
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Snake DQN Play")
+
+font = pygame.font.SysFont("comicsans", 28)
+title_font = pygame.font.SysFont("comicsans", 48, bold=True)
+clock = pygame.time.Clock()
+HS_FILE = "highscore_dqn.txt"
+
+# --- Helper functions ---
+def load_highscore():
+    if os.path.exists(HS_FILE):
+        with open(HS_FILE, "r") as f:
+            return int(f.read().strip())
+    return 0
+
+def save_highscore(score):
+    high = load_highscore()
+    if score > high:
+        with open(HS_FILE, "w") as f:
+            f.write(str(score))
+
+def draw_text(text, font, color, x, y, center=True):
+    render = font.render(text, True, color)
+    rect = render.get_rect(center=(x, y)) if center else render.get_rect(topleft=(x, y))
+    screen.blit(render, rect)
+
+def draw_grid():
+    for x in range(0, WIDTH, CELL_SIZE):
+        pygame.draw.line(screen, GRAY, (x, 0), (x, HEIGHT))
+    for y in range(0, HEIGHT, CELL_SIZE):
+        pygame.draw.line(screen, GRAY, (0, y), (WIDTH, y))
+
+def draw_snake(snake):
+    for segment in snake:
+        pygame.draw.rect(screen, DARK_GREEN, (*segment, CELL_SIZE, CELL_SIZE))
+
+def draw_food(food):
+    pygame.draw.rect(screen, RED, (*food, CELL_SIZE, CELL_SIZE))
+
+# --- Game loops ---
+def human_game_loop():
+    snake = [[100, 100]]
+    direction = "RIGHT"
+    food = [random.randrange(0, WIDTH, CELL_SIZE),
+            random.randrange(0, HEIGHT, CELL_SIZE)]
+    score = 0
+
+    while True:
+        clock.tick(10)
+        # Human input
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_UP and direction != "DOWN": direction = "UP"
+                elif event.key == pygame.K_DOWN and direction != "UP": direction = "DOWN"
+                elif event.key == pygame.K_LEFT and direction != "RIGHT": direction = "LEFT"
+                elif event.key == pygame.K_RIGHT and direction != "LEFT": direction = "RIGHT"
+
+        x, y = snake[0]
+        if direction == "UP": y -= CELL_SIZE
+        elif direction == "DOWN": y += CELL_SIZE
+        elif direction == "LEFT": x -= CELL_SIZE
+        elif direction == "RIGHT": x += CELL_SIZE
+        new_head = [x, y]
+
+        if (x < 0 or x >= WIDTH or y < 0 or y >= HEIGHT or new_head in snake):
+            save_highscore(score)
+            return score
+
+        snake.insert(0, new_head)
+
+        if new_head == food:
+            score += 50
+            while True:
+                food = [random.randrange(0, WIDTH, CELL_SIZE),
+                        random.randrange(0, HEIGHT, CELL_SIZE)]
+                if food not in snake:
+                    break
+        else:
+            snake.pop()
+            score -= 1
+
+        # Draw
+        screen.fill(BLACK)
+        draw_grid()
+        draw_snake(snake)
+        draw_food(food)
+        draw_text(f"Score: {score}", font, WHITE, 10, 10, center=False)
+        pygame.display.flip()
+
+def ai_game_loop():
+    env = SnakeEnv()
+    state = env.reset()
+    state_dim = len(state)
+    action_dim = 4
+
+    agent = DQNAgent(state_dim, action_dim)
+    agent.model.load_state_dict(torch.load("dqn_snake.pth"))
+    agent.model.eval()
+
+    score = 0
+    running = True
+    while running:
+        clock.tick(10)
+        state_tensor = torch.FloatTensor(state).unsqueeze(0)
+        with torch.no_grad():
+            q_values = agent.model(state_tensor)
+        action = int(torch.argmax(q_values).item())
+
+        next_state, reward, done, _ = env.step(action)
+        state = next_state
+        score += reward  # <-- accumulate reward including move penalty
+
+        # Draw
+        screen.fill(BLACK)
+        draw_grid()
+        for segment in env.snake:
+            pygame.draw.rect(screen, DARK_GREEN,
+                         (segment[0]*CELL_SIZE, segment[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE))
+        pygame.draw.rect(screen, RED,
+                     (env.food[0]*CELL_SIZE, env.food[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE))
+        draw_text(f"AI Score: {score}", font, WHITE, 10, 10, center=False)
+        pygame.display.flip()
+
+        if done:
+            save_highscore(score)
+            running = False
+    
+    return score
+
+# --- Start & game over screens ---
+def start_screen():
+    selected = 0
+    options = ["Play", "AI Play", "Quit"]
+    highscore = load_highscore()
+
+    while True:
+        screen.fill(BLACK)
+        draw_text("SNAKE GAME (DQN)", title_font, GREEN, WIDTH//2, 100)
+        draw_text(f"High Score: {highscore}", font, WHITE, WIDTH//2, 150)
+
+        for i, opt in enumerate(options):
+            color = GREEN if i == selected else GRAY
+            draw_text(opt, font, color, WIDTH//2, 230 + i*40)
+
+        draw_text("Arrow Keys to move | ENTER to select",
+                  pygame.font.SysFont("comicsans", 20),
+                  WHITE, WIDTH//2, 340)
+        pygame.display.flip()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_UP:
+                    selected = (selected - 1) % len(options)
+                elif event.key == pygame.K_DOWN:
+                    selected = (selected + 1) % len(options)
+                elif event.key == pygame.K_RETURN:
+                    if options[selected] == "Play":
+                        score = human_game_loop()
+                        game_over_screen(score)
+                    elif options[selected] == "AI Play":
+                        score = ai_game_loop()
+                        game_over_screen(score)
+                    elif options[selected] == "Quit":
+                        pygame.quit(); sys.exit()
+
+def game_over_screen(score):
+    high = load_highscore()
+    while True:
+        screen.fill(BLACK)
+        draw_text("Game Over!", title_font, RED, WIDTH//2, 120)
+        draw_text(f"Score: {score}", font, WHITE, WIDTH//2, 180)
+        draw_text(f"High Score: {high}", font, GREEN, WIDTH//2, 220)
+        draw_text("Press ENTER to return to menu",
+                  pygame.font.SysFont("comicsans", 20),
+                  WHITE, WIDTH//2, 300)
+        pygame.display.flip()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                return
+
+# --- Run ---
+if __name__ == "__main__":
+    start_screen()
+
